@@ -1389,11 +1389,17 @@ void ggml_cuda_flash_attn_ext_tile_case(ggml_backend_cuda_context & ctx, ggml_te
     // kernel) only when both are q8_0; any other type uses the upstream f16 scratch path. Must be kept
     // in sync with the need_f16 flags in ggml_cuda_flash_attn_ext_get_alloc_size() (fattn.cu).
     const bool native_q8_0 = K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q8_0 && K->ne[0] % 64 == 0 && V->ne[0] % QK8_0 == 0;
+    // P0: asymmetric KV (K f16 / V q8_0): K uses the native f16 loader, V is dequantized in-kernel.
+    // Must be kept in sync with the dispatcher and get_alloc_size() (fattn.cu).
+    const bool native_v_q8_0 = V->type == GGML_TYPE_Q8_0 && V->ne[0] % QK8_0 == 0 &&
+        (K->type == GGML_TYPE_F16 || (K->type == GGML_TYPE_Q8_0 && K->ne[0] % 64 == 0));
 
     if (logit_softcap == 0.0f) {
         constexpr bool use_logit_softcap = false;
         if (native_q8_0) {
             launch_fattn_tile_switch_ncols2<DKQ, DV, use_logit_softcap, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>(ctx, dst);
+        } else if (native_v_q8_0) {
+            launch_fattn_tile_switch_ncols2<DKQ, DV, use_logit_softcap, GGML_TYPE_F16, GGML_TYPE_Q8_0>(ctx, dst);
         } else {
             launch_fattn_tile_switch_ncols2<DKQ, DV, use_logit_softcap, GGML_TYPE_F16, GGML_TYPE_F16>(ctx, dst);
         }
@@ -1401,6 +1407,8 @@ void ggml_cuda_flash_attn_ext_tile_case(ggml_backend_cuda_context & ctx, ggml_te
         constexpr bool use_logit_softcap = true;
         if (native_q8_0) {
             launch_fattn_tile_switch_ncols2<DKQ, DV, use_logit_softcap, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>(ctx, dst);
+        } else if (native_v_q8_0) {
+            launch_fattn_tile_switch_ncols2<DKQ, DV, use_logit_softcap, GGML_TYPE_F16, GGML_TYPE_Q8_0>(ctx, dst);
         } else {
             launch_fattn_tile_switch_ncols2<DKQ, DV, use_logit_softcap, GGML_TYPE_F16, GGML_TYPE_F16>(ctx, dst);
         }

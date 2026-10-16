@@ -710,10 +710,15 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                 }
             }
         } else {
-            // P3: route uniform q8_0 KV to the generic tile kernel (in-kernel dequant) only when GQA reuse applies.
+            // P3+P0: route native-quantized KV (both q8_0, or K f16 / V q8_0) to the generic tile kernel,
+            // which dequantizes in-kernel — only when GQA reuse applies.
             // (c) block-aligned q8_0 layout required: nbatch_K (64 for all supported DKQ) and DV must be
             //     multiples of QK8_0, hence DKQ % 64 == 0. Otherwise fall back to the upstream path.
-            if (!(K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q8_0 && K->ne[0] % 64 == 0 && V->ne[0] % QK8_0 == 0 && gqa_opt_applies)) {
+            const bool native_q8_0   = K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q8_0 &&
+                                       K->ne[0] % 64 == 0 && V->ne[0] % QK8_0 == 0;
+            const bool native_v_q8_0 = V->type == GGML_TYPE_Q8_0 && V->ne[0] % QK8_0 == 0 &&
+                                       (K->type == GGML_TYPE_F16 || (K->type == GGML_TYPE_Q8_0 && K->ne[0] % 64 == 0));
+            if (!((native_q8_0 || native_v_q8_0) && gqa_opt_applies)) {
                 if (Q->ne[1] <= 2) {
                     return BEST_FATTN_KERNEL_VEC;
                 }
@@ -740,10 +745,14 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
 
     switch (kernel) {
         case BEST_FATTN_KERNEL_TILE: {
-            // P3: the tile kernel dequantizes q8_0 KV in-kernel, so no f16 scratch is needed then.
-            const bool native_q8_0 = K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q8_0 && K->ne[0] % 64 == 0 && V->ne[0] % QK8_0 == 0;
+            // P3+P0: the tile kernel dequantizes q8_0 KV in-kernel, so no f16 scratch is needed then.
+            // native_v_q8_0 covers asymmetric (K f16 / V q8_0); keep in sync with the dispatcher.
+            const bool native_q8_0   = K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q8_0 &&
+                                       K->ne[0] % 64 == 0 && V->ne[0] % QK8_0 == 0;
+            const bool native_v_q8_0 = V->type == GGML_TYPE_Q8_0 && V->ne[0] % QK8_0 == 0 &&
+                                       (K->type == GGML_TYPE_F16 || (K->type == GGML_TYPE_Q8_0 && K->ne[0] % 64 == 0));
             need_f16_K = !native_q8_0;
-            need_f16_V = !native_q8_0;
+            need_f16_V = !native_v_q8_0;
         } break;
         case BEST_FATTN_KERNEL_MMA_F16:
             need_f16_K = true;
